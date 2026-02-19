@@ -1,0 +1,24 @@
+# Environment files with secrets
+.env
+.env.local
+.env.*.local
+
+# Kubernetes secrets (contains API keys)
+k8s/secret.yaml
+
+# Terraform
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.backup
+**/terraform.tfvars
+**/.terraform.lock.hcl
+
+# Python virtual environment
+.venv/
+
+# Generated files
+alerts/
+logs/
+
+# Alert tracking file (contains alert IDs)
+.automation_alert_ids.json

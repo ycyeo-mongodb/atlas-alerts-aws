@@ -1,0 +1,48 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: atlas-alerts-creator
+  namespace: atlas-alerts
+  labels:
+    app: atlas-alerts
+spec:
+  # Job will be deleted 5 minutes after completion
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app: atlas-alerts
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: atlas-alerts
+          image: 979559056307.dkr.ecr.ap-southeast-1.amazonaws.com/asean-yc-alerts-demo:latest
+          imagePullPolicy: Always
+          env:
+            # Load credentials from secret
+            - name: MONGODB_ATLAS_PUBLIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: atlas-api-credentials
+                  key: MONGODB_ATLAS_PUBLIC_API_KEY
+            - name: MONGODB_ATLAS_PRIVATE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: atlas-api-credentials
+                  key: MONGODB_ATLAS_PRIVATE_API_KEY
+            - name: MONGODB_ATLAS_PROJECT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: atlas-api-credentials
+                  key: MONGODB_ATLAS_PROJECT_ID
+          args:
+            - "--project-id"
+            - "$(MONGODB_ATLAS_PROJECT_ID)"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"

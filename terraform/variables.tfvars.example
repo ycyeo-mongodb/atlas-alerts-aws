@@ -1,0 +1,11 @@
+# Example terraform.tfvars file
+# Copy this to terraform.tfvars and fill in your values
+
+aws_region            = "us-east-1"
+eks_cluster_name      = "your-eks-cluster-name"
+eks_oidc_provider_arn = "arn:aws:iam::123456789012:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B71EXAMPLE"
+
+# MongoDB Atlas Credentials (sensitive)
+atlas_public_key  = "your-atlas-public-key"
+atlas_private_key = "your-atlas-private-key"
+atlas_project_id  = "your-atlas-project-id"
