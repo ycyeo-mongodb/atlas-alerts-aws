@@ -1,7 +1,0 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: atlas-alerts
-  labels:
-    app: atlas-alerts
-    purpose: mongodb-atlas-alert-automation
