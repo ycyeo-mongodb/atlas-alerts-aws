@@ -1,501 +1,343 @@
 # MongoDB Atlas Alert Automation
 
-Automation script to create MongoDB Atlas alerts from an Excel configuration file using the Atlas CLI.
-
-**IMPORTANT: These are AUTOMATED ALERTS - NOT default Atlas alerts.**
-
-## Why This Exists
-
-MongoDB provides [recommended alert configurations](https://www.mongodb.com/docs/atlas/architecture/current/monitoring-alerts/#recommended-atlas-alert-configurations) to help teams monitor their Atlas deployments effectively. However, implementing these recommendations manually requires cross-referencing multiple documentation sources:
-
-1. Review the [recommended alert configurations](https://www.mongodb.com/docs/atlas/architecture/current/monitoring-alerts/#recommended-atlas-alert-configurations) to understand what to monitor
-2. Look up the [alert conditions reference](https://www.mongodb.com/docs/atlas/reference/alert-conditions/#host-alerts) to map each recommendation to the correct category, condition, and metric
-3. Follow the [configure an alert guide](https://www.mongodb.com/docs/atlas/configure-alerts/#configure-an-alert) to actually create each alert in the Atlas UI
-4. Set the correct threshold values and notification preferences
-5. Repeat this process for each alert (20+ configurations)
-
-For a single project, this can take significant time. For organizations managing multiple Atlas projects, the manual approach becomes a bottleneck during onboarding and increases the risk of misconfiguration.
-
-This tool automates the entire process: define your alert configurations once in a spreadsheet, then deploy them consistently across any number of projects in seconds.
+Automates creation of MongoDB Atlas alerts from an Excel configuration file using the Atlas CLI.
 
 ## Prerequisites
 
 - Python 3.8+
-- MongoDB Atlas CLI installed and configured
-- Atlas API Key or Service Account with Project Owner role
-- Excel file `atlas_alert_configurations.xlsx` with alert definitions
+- MongoDB Atlas CLI (`brew install mongodb-atlas-cli`)
+- Atlas API Key with **Project Owner** role
 
-## Installation
-
-### Install MongoDB Atlas CLI
-
-**macOS:**
-```bash
-brew install mongodb-atlas-cli
-```
-
-**Linux (Debian/Ubuntu):**
-```bash
-# Add MongoDB GPG key
-curl -fsSL https://pgp.mongodb.com/server-7.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-7.0.gpg --dearmor
-
-# Add repository
-echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list
-
-# Install
-sudo apt update && sudo apt install mongodb-atlas-cli
-```
-
-**Direct Download:**
-https://www.mongodb.com/try/download/atlascli
-
-### Configure Atlas CLI Authentication
-
-Run the interactive login:
-```bash
-atlas auth login
-```
-
-You'll be prompted to select an authentication type:
-- **UserAccount** - Best for getting started (opens browser)
-- **ServiceAccount** - Best for automation
-- **APIKeys** - For existing automations
-
-**Verify authentication:**
-```bash
-atlas auth whoami
-atlas projects list
-```
-
-### Install Python Dependencies
+## Quick Start
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+# 1. Install dependencies
 pip install -r requirements.txt
-```
 
-Note: The wrapper script (`run_alerts.sh`) will use the existing `.venv` if present, or create one if not.
+# 2. Authenticate Atlas CLI
+atlas auth login
 
-## Usage
-
-### Basic Usage
-
-```bash
+# 3. Run the script
 ./run_alerts.sh --project-id YOUR_PROJECT_ID
 ```
 
-### Dry Run (Generate JSON Only)
+---
 
-Generate JSON files without creating alerts in Atlas:
+## Script Execution Flow
 
-```bash
-./run_alerts.sh --project-id YOUR_PROJECT_ID --dry-run
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           SCRIPT EXECUTION FLOW                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  1. PARSE ARGS                                                              │
+│     └── --project-id, --dry-run, --excel-file, etc.                        │
+│                                                                             │
+│  2. CHECK ATLAS CLI                                                         │
+│     └── Is `atlas` installed? Is it authenticated?                         │
+│                                                                             │
+│  3. READ EXCEL FILE                                                         │
+│     └── atlas_alert_configurations.xlsx                                     │
+│         └── Extract: name, low_threshold, high_threshold                   │
+│                                                                             │
+│  4. FOR EACH ALERT:                                                         │
+│     │                                                                       │
+│     ├── Look up in ALERT_MAPPINGS                                          │
+│     │   └── Get: event_type, metric_name, units                            │
+│     │                                                                       │
+│     ├── Parse threshold string                                              │
+│     │   └── "> 75% for 5 minutes" → {operator: GT, threshold: 75, dur: 5}  │
+│     │                                                                       │
+│     ├── Create alert config JSON                                            │
+│     │   └── {eventTypeName, metricThreshold, notifications, ...}           │
+│     │                                                                       │
+│     └── Write to alerts/XX_alert_name.json                                 │
+│                                                                             │
+│  5. FOR EACH JSON FILE:                                                     │
+│     │                                                                       │
+│     └── Run: atlas alerts settings create --file X.json --projectId Y      │
+│         │                                                                   │
+│         ├── SUCCESS → Track alert ID in .automation_alert_ids.json         │
+│         └── FAILURE → Log error, continue to next                          │
+│                                                                             │
+│  6. PRINT SUMMARY                                                           │
+│     └── Total: 33, Success: 33, Failed: 0                                  │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Custom Notification Email
+---
 
-```bash
-./run_alerts.sh --project-id YOUR_PROJECT_ID --notification-email alerts@yourcompany.com
+## How `create_atlas_alerts.py` Works
+
+### Overview
+
+The script reads alert definitions from an Excel file and creates them in MongoDB Atlas via the CLI. It generates JSON configuration files in the `alerts/` folder before deploying them.
+
+### Step-by-Step Breakdown
+
+#### Step 1: Parse Command Line Arguments (Lines 808-870)
+
+```python
+parser.add_argument("--project-id", required=True)
+parser.add_argument("--dry-run", action="store_true")
+parser.add_argument("--excel-file", default="atlas_alert_configurations.xlsx")
+parser.add_argument("--delete-existing", action="store_true")
 ```
 
-### Custom Excel File Location
+| Argument | Description |
+|----------|-------------|
+| `--project-id` | MongoDB Atlas Project ID (required) |
+| `--dry-run` | Generate JSON files only, don't create alerts |
+| `--excel-file` | Path to Excel config file |
+| `--delete-existing` | Delete previously created alerts |
+| `--delete-all` | Delete ALL alerts (including defaults) |
 
-```bash
-./run_alerts.sh --project-id YOUR_PROJECT_ID --excel-file /path/to/alerts.xlsx
+#### Step 2: Check Atlas CLI (Lines 549-585)
+
+```python
+def check_atlas_cli(logger):
+    # Check if atlas CLI is installed
+    subprocess.run(["atlas", "--version"])
+    
+    # Check if authenticated
+    subprocess.run(["atlas", "config", "list"])
 ```
 
-### Delete Automation-Created Alerts Only
+Verifies:
+- Atlas CLI is installed
+- CLI is authenticated (has valid credentials)
 
-```bash
-./run_alerts.sh --project-id YOUR_PROJECT_ID --delete-existing
+#### Step 3: Read Excel File (Lines 398-426)
+
+```python
+def read_excel_file(excel_path, logger):
+    wb = openpyxl.load_workbook(excel_path)
+    sheet = wb.active
+    
+    for row in sheet.iter_rows(min_row=2, values_only=True):
+        alert = {
+            "name": row[0],           # e.g., "System: CPU (User) %"
+            "category": row[1],       # e.g., "Host"
+            "low_threshold": row[2],  # e.g., "> 75% for 5 minutes"
+            "high_threshold": row[3], # e.g., "> 95% for 5 minutes"
+        }
 ```
 
-Deletes only alerts created by this automation (tracked in `.automation_alert_ids.json`). Default Atlas alerts are preserved. Does not create new alerts.
+Reads each row from the Excel file and extracts:
+- Alert name (must match a key in `ALERT_MAPPINGS`)
+- Low priority threshold
+- High priority threshold
 
-### Delete ALL Alerts
+#### Step 4: Look Up Alert Mapping (Lines 42-149)
 
-```bash
-./run_alerts.sh --project-id YOUR_PROJECT_ID --delete-all
+```python
+ALERT_MAPPINGS = {
+    "System: CPU (User) %": {
+        "event_type": "OUTSIDE_METRIC_THRESHOLD",
+        "metric_name": "NORMALIZED_SYSTEM_CPU_USER",
+        "units": "RAW",
+    },
+    "Host is Down": {
+        "event_type": "HOST_DOWN",
+        "metric_name": None,
+        "uses_threshold": True,
+    },
+    # ... 18 more alert types
+}
 ```
 
-Deletes ALL alerts including default Atlas alerts. You'll need to type `delete all` to confirm. Does not create new alerts.
+This dictionary maps human-readable alert names to Atlas API parameters:
+- `event_type` → The Atlas `eventTypeName`
+- `metric_name` → For metric-based alerts
+- `units` → BYTES, MILLISECONDS, SECONDS, HOURS, or RAW
+- `uses_threshold` → For event-based alerts with thresholds
 
-### All Options
+#### Step 5: Parse Threshold String (Lines 181-299)
 
-```bash
-./run_alerts.sh \
-  --project-id YOUR_PROJECT_ID \
-  --excel-file custom_alerts.xlsx \
-  --output-dir ./my-alerts \
-  --notification-email alerts@company.com \
-  --notification-roles GROUP_OWNER,GROUP_DATA_ACCESS_ADMIN \
-  --delete-existing \
-  --dry-run
+```python
+def parse_threshold(threshold_str):
+    # Input: "> 75% for 5 minutes"
+    # Output: {
+    #     "operator": "GREATER_THAN",
+    #     "threshold": 75,
+    #     "units": "RAW",
+    #     "duration_minutes": 5
+    # }
 ```
 
-## Command Line Arguments
+Parses various threshold formats:
 
-| Argument | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `--project-id` | Yes | - | MongoDB Atlas Project ID |
-| `--dry-run` | No | false | Generate JSON files but don't create alerts |
-| `--excel-file` | No | `atlas_alert_configurations.xlsx` | Path to Excel configuration file |
-| `--output-dir` | No | `./alerts` | Directory for generated JSON files |
-| `--notification-email` | No | - | Email address for alert notifications |
-| `--notification-roles` | No | `GROUP_OWNER` | Comma-separated notification roles |
-| `--delete-existing` | No | false | Delete automation-created alerts only, then exit |
-| `--delete-all` | No | false | Delete ALL alerts (including defaults), then exit |
-| `--log-dir` | No | `./logs` | Directory for log files |
+| Input | Parsed Output |
+|-------|---------------|
+| `> 4000 for 2 minutes` | `{operator: GT, threshold: 4000, duration: 2}` |
+| `< 24h for 5 minutes` | `{operator: LT, threshold: 86400s, duration: 5}` |
+| `> 50ms for 5 minutes` | `{operator: GT, threshold: 50, units: MS, duration: 5}` |
+| `> 2GB for 15 minutes` | `{operator: GT, threshold: 2147483648, units: BYTES}` |
+| `Any occurrence` | `{is_event: true}` |
 
-## Alert Configuration Mapping
+#### Step 6: Create Alert Config JSON (Lines 302-395)
 
-| Alert Name | Atlas Event Type | Metric Name |
-|------------|------------------|-------------|
-| Oplog Window | REPLICATION_OPLOG_WINDOW_RUNNING_OUT | - |
-| Number of elections in last hour | TOO_MANY_ELECTIONS | - |
-| Disk read IOPS on Data Partition | OUTSIDE_METRIC_THRESHOLD | DISK_PARTITION_READ_IOPS_DATA |
-| Disk write IOPS on Data Partition | OUTSIDE_METRIC_THRESHOLD | DISK_PARTITION_WRITE_IOPS_DATA |
-| Disk read latency on Data Partition | OUTSIDE_METRIC_THRESHOLD | DISK_PARTITION_READ_LATENCY_DATA |
-| Disk write latency on Data Partition | OUTSIDE_METRIC_THRESHOLD | DISK_PARTITION_WRITE_LATENCY_DATA |
-| Swap Usage | OUTSIDE_METRIC_THRESHOLD | SWAP_USAGE_USED |
-| Host is Down | HOST_DOWN | - |
-| Replica set has no primary | NO_PRIMARY | - |
-| Page Faults | OUTSIDE_METRIC_THRESHOLD | EXTRA_INFO_PAGE_FAULTS |
-| Replication Lag | OUTSIDE_METRIC_THRESHOLD | OPLOG_SLAVE_LAG_MASTER_TIME |
-| Failed backup | CPS_SNAPSHOT_FAILED | - |
-| Restored backup | CPS_RESTORE_SUCCESSFUL | - |
-| Fallback snapshot failed | CPS_SNAPSHOT_FALLBACK_FAILED | - |
-| Backup schedule behind | CPS_SNAPSHOT_BEHIND | - |
-| Queues: Readers | OUTSIDE_METRIC_THRESHOLD | GLOBAL_LOCK_CURRENT_QUEUE_READERS |
-| Queues: Writers | OUTSIDE_METRIC_THRESHOLD | GLOBAL_LOCK_CURRENT_QUEUE_WRITERS |
-| Restarts last hour | OUTSIDE_METRIC_THRESHOLD | RESTARTS_IN_LAST_HOUR |
-| Replica set elected a new primary | PRIMARY_ELECTED | - |
-| System: CPU (User) % | OUTSIDE_METRIC_THRESHOLD | NORMALIZED_SYSTEM_CPU_USER |
-| Disk space % used on Data Partition | OUTSIDE_METRIC_THRESHOLD | DISK_PARTITION_SPACE_USED_DATA |
+```python
+def create_alert_config(alert_name, threshold_info, priority, mapping, ...):
+    config = {
+        "eventTypeName": mapping["event_type"],
+        "enabled": True,
+        "notifications": [{
+            "typeName": "GROUP",
+            "intervalMin": 60,
+            "delayMin": threshold_info["duration_minutes"],
+            "emailEnabled": True,
+            "roles": ["GROUP_OWNER"],
+        }],
+    }
+    
+    # For metric-based alerts
+    if mapping.get("metric_name"):
+        config["metricThreshold"] = {
+            "metricName": mapping["metric_name"],
+            "operator": threshold_info["operator"],
+            "threshold": threshold_info["threshold"],
+        }
+```
+
+Builds the JSON structure that Atlas API expects.
+
+#### Step 7: Write JSON Files to `alerts/` Folder (Lines 429-546)
+
+```python
+def generate_json_files(alerts, output_dir, ...):
+    # Clean up old JSON files
+    for f in output_dir.glob("*.json"):
+        f.unlink()
+    
+    # Generate new JSON files
+    for alert in alerts:
+        filename = f"{index:02d}_{alert_name}_low.json"
+        filepath = output_dir / filename
+        
+        with open(filepath, "w") as f:
+            json.dump(config, f, indent=2)
+```
+
+**Yes, it creates JSON files in `alerts/` folder:**
+- `01_oplog_window_low.json`
+- `02_oplog_window_high.json`
+- `03_disk_read_iops_on_data_partition_low.json`
+- etc.
+
+#### Step 8: Create Alerts via Atlas CLI (Lines 588-659)
+
+```python
+def create_alerts(generated_files, project_id, dry_run, ...):
+    for file_info in generated_files:
+        result = subprocess.run([
+            "atlas", "alerts", "settings", "create",
+            "--file", str(filepath),
+            "--projectId", project_id,
+            "--output", "json",
+        ])
+        
+        if result.returncode == 0:
+            # Extract alert ID from response
+            response = json.loads(result.stdout)
+            alert_id = response.get("id")
+            created_alert_ids.append(alert_id)
+```
+
+For each JSON file:
+1. Runs `atlas alerts settings create --file X.json`
+2. Captures the alert ID from the response
+3. Tracks successful alert IDs in `.automation_alert_ids.json`
+
+#### Step 9: Track Alert IDs (Lines 676-696)
+
+```python
+def save_tracked_alerts(script_dir, project_id, alert_ids):
+    # Save to .automation_alert_ids.json
+    data[project_id] = list(existing.union(alert_ids))
+    with open(tracking_file, "w") as f:
+        json.dump(data, f, indent=2)
+```
+
+Stores created alert IDs so they can be deleted later with `--delete-existing`.
+
+---
 
 ## Directory Structure
 
 ```
 atlas-alerts-creation/
-├── README.md                           # This file
-├── run_alerts.sh                       # Bash wrapper script
-├── create_atlas_alerts.py              # Main Python script
-├── requirements.txt                    # Python dependencies
-├── atlas_alert_configurations.xlsx     # Excel configuration (user provided)
-├── alerts/                             # Generated JSON files
+├── create_atlas_alerts.py          # Main Python script
+├── run_alerts.sh                   # Bash wrapper script
+├── atlas_alert_configurations.xlsx # Excel config (your thresholds)
+├── requirements.txt                # Python dependencies
+├── .env.local                      # Local credentials (gitignored)
+├── .automation_alert_ids.json      # Tracks created alert IDs (gitignored)
+├── alerts/                         # Generated JSON files (gitignored)
 │   ├── 01_oplog_window_low.json
 │   ├── 02_oplog_window_high.json
 │   └── ...
-└── logs/                               # Execution logs
-    └── alert_creation_YYYYMMDD_HHMMSS.log
+└── logs/                           # Execution logs (gitignored)
 ```
 
-## Troubleshooting
+---
 
-### Atlas CLI Not Found
+## Usage Examples
 
 ```bash
-# Verify installation
-which atlas
-atlas --version
+# Basic usage
+./run_alerts.sh --project-id YOUR_PROJECT_ID
 
-# If not found, reinstall following the installation steps above
+# Dry run (generate JSON only, don't create alerts)
+./run_alerts.sh --project-id YOUR_PROJECT_ID --dry-run
+
+# With custom notification email
+./run_alerts.sh --project-id YOUR_PROJECT_ID --notification-email alerts@company.com
+
+# Delete automation-created alerts only
+./run_alerts.sh --project-id YOUR_PROJECT_ID --delete-existing
+
+# Delete ALL alerts (including defaults)
+./run_alerts.sh --project-id YOUR_PROJECT_ID --delete-all
 ```
 
-### Authentication Failed
+---
 
-```bash
-# Check current authentication
-atlas auth whoami
+## Alert Notification Timing
 
-# Re-authenticate if needed
-atlas auth login
+The `delayMin` parameter controls when you receive an email:
 
-# List available profiles
-atlas config list
-```
+| Threshold | delayMin | Meaning |
+|-----------|----------|---------|
+| `> 75% for 5 minutes` | 5 | Email sent after condition persists 5 min |
+| `> 95% for 0 minutes` | 0 | Email sent immediately |
+| `Any occurrence` | 0 | Email sent immediately |
 
-### Permission Denied
+**Important:** If the condition resolves before `delayMin`, no email is sent.
 
-Ensure your API key has **Project Owner** role for the target project:
-1. Go to Atlas UI > Access Manager > API Keys
-2. Verify the key has Project Owner permissions
+---
 
-### Invalid Metric Name
+## Adding New Alert Types
 
-Some metrics may have different names depending on your Atlas version. See [Finding Metric Names for New Alerts](#finding-metric-names-for-new-alerts) below for how to discover available metrics.
-
-### Verify Created Alerts
-
-1. Go to Atlas UI
-2. Navigate to your project
-3. Click on **Alerts** in the left sidebar
-4. Click on **Alert Settings** tab
-5. Review the created alerts
-
-### Delete Alerts
-
-To manually delete an alert:
-
-```bash
-# List all alerts
-atlas alerts settings list --projectId YOUR_PROJECT_ID
-
-# Delete a specific alert
-atlas alerts settings delete ALERT_ID --projectId YOUR_PROJECT_ID --force
-```
-
-## Excel File Format
-
-The Excel file defines **what thresholds to use**. The script's `ALERT_MAPPINGS` defines **what metric names to use**.
-
-| Column | Description |
-|--------|-------------|
-| Alert Name | Must exactly match a key in `ALERT_MAPPINGS` (in `create_atlas_alerts.py`) |
-| Alert Type/Category | Category (Replica Set, Host, Cloud Backup, etc.) - for documentation only |
-| Low Priority Threshold | Threshold for low priority alerts (e.g., `> 80% for 5 minutes`) |
-| High Priority Threshold | Threshold for high priority alerts (e.g., `> 90% for 5 minutes`) |
-| Key Insights | Description of what the alert monitors - for documentation only |
-
-**How it works:**
-1. Script reads Alert Name from Excel (e.g., "Disk read IOPS on Data Partition")
-2. Looks up that name in `ALERT_MAPPINGS` to get the metric name (e.g., `DISK_PARTITION_READ_IOPS_DATA`)
-3. Combines the metric name with the threshold from Excel to create the alert
-
-**To fix metric name errors:** Update `ALERT_MAPPINGS` in the Python script, not the Excel file.
-
-### Threshold Format Examples
-
-- `> 4000 for 2 minutes` - Greater than 4000 for 2 minutes
-- `< 24h for 5 minutes` - Less than 24 hours for 5 minutes
-- `> 50ms for 5 minutes` - Greater than 50 milliseconds for 5 minutes
-- `> 2GB for 15 minutes` - Greater than 2 gigabytes for 15 minutes
-- `> 90%` - Greater than 90 percent
-- `Any occurrence` - Alert on any occurrence (event-based)
-- `15 minutes` - Duration-based threshold
-
-## Extending and Modifying Alerts
-
-### Adding New Alerts
-
-To add a new alert, you need to update two files:
-
-**Step 1: Add mapping to `create_atlas_alerts.py`**
-
-Add an entry to the `ALERT_MAPPINGS` dictionary (around line 42):
+1. Add entry to `ALERT_MAPPINGS` in `create_atlas_alerts.py`:
 
 ```python
 "Your Alert Name": {
-    "event_type": "EVENT_TYPE_NAME",    # Required: Atlas event type
-    "metric_name": "METRIC_NAME",        # Optional: for metric-based alerts, or None
-    "units": "RAW",                      # Optional: BYTES, MILLISECONDS, SECONDS, HOURS, RAW
-    "uses_threshold": True,              # Optional: for event-based alerts with thresholds
-}
-```
-
-**Step 2: Add a row to `atlas_alert_configurations.xlsx`**
-
-Add a row with these columns:
-- **Alert Name** - Must exactly match the key in `ALERT_MAPPINGS`
-- **Low Priority Threshold** - e.g., `> 4000 for 2 minutes`
-- **High Priority Threshold** - Different threshold, or leave empty if same as low
-
-### Alert Types
-
-| Type | Description | Example |
-|------|-------------|---------|
-| Metric-based | Uses `OUTSIDE_METRIC_THRESHOLD` event with a `metric_name` | Disk IOPS, CPU % |
-| Event with threshold | Event type with `uses_threshold: True` | Elections, Host Down |
-| Pure event | No threshold, fires on any occurrence | Failed Backup, No Primary |
-
-### Changing Thresholds
-
-Edit the threshold columns in `atlas_alert_configurations.xlsx`. Supported formats:
-
-| Format | Example | Description |
-|--------|---------|-------------|
-| Basic comparison | `> 4000 for 2 minutes` | Value exceeds 4000 for 2 minutes |
-| Time-based | `< 24h for 5 minutes` | Less than 24 hours for 5 minutes |
-| Milliseconds | `> 50ms for 5 minutes` | Latency over 50ms |
-| Size-based | `> 2GB for 15 minutes` | Size exceeds 2GB |
-| Percentage | `> 80%` | Percentage threshold |
-| Event-based | `Any occurrence` | Fires on any occurrence |
-| Duration only | `15 minutes` | Duration-based threshold |
-
-### Key Conventions
-
-1. **Low vs High priority**: System creates separate alerts when thresholds differ
-2. **Duplicate detection**: Alerts with identical `(event_type, metric_name, threshold, duration)` are auto-skipped
-3. **File naming**: JSON files are auto-generated as `{number}_{alert_name}_{priority}.json`
-4. **Test first**: Always use `--dry-run` to validate before deploying
-5. **delayMin**: Automatically set from threshold duration (when first notification fires)
-6. **Notification interval**: Fixed at 60 minutes for all GROUP notifications
-
-### Example: Adding a Connection Count Alert
-
-1. Add to `ALERT_MAPPINGS` in `create_atlas_alerts.py`:
-```python
-"Connection Count": {
     "event_type": "OUTSIDE_METRIC_THRESHOLD",
-    "metric_name": "CONNECTIONS",
+    "metric_name": "YOUR_METRIC_NAME",
     "units": "RAW",
 }
 ```
 
-2. Add row to Excel file:
-   - Alert Name: `Connection Count`
-   - Low Priority Threshold: `> 500 for 5 minutes`
-   - High Priority Threshold: `> 1000 for 2 minutes`
+2. Add row to `atlas_alert_configurations.xlsx` with matching alert name
 
-3. Test with dry run:
-```bash
-./run_alerts.sh --project-id YOUR_PROJECT_ID --dry-run
-```
+3. Run: `./run_alerts.sh --project-id YOUR_PROJECT_ID`
 
-4. Review generated JSON in `alerts/` directory, then deploy.
+---
 
-## Finding Metric Names for New Alerts
+## Reference
 
-If you need to add a new alert type or if alerts fail with errors, you'll need to find the correct metric name that Atlas expects.
-
-**Important:** Metric names can vary between Atlas versions. The most reliable method is to create an alert manually via the UI and inspect it via the CLI/API.
-
-### Method 1: Create Manually and Inspect (Recommended)
-
-This is the most reliable method to find exact metric names:
-
-1. **Create the alert manually** in the Atlas UI:
-   - Go to your project → Alerts → Alert Settings
-   - Click "Add New Alert"
-   - Configure the alert type you want (e.g., CPU, Disk, etc.)
-   - Save the alert
-
-2. **Get the alert config ID** from the Atlas UI:
-   - Click to edit the alert you just created
-   - Copy the `alertConfigId` from the URL, e.g.:
-     `https://cloud.mongodb.com/v2/YOUR_PROJECT_ID#/alerts/manage/active?operation=Edit&alertConfigId=YOUR_ALERT_CONFIG_ID`
-
-3. **Query the specific alert via Atlas CLI** to see the exact JSON structure:
-
-```bash
-# Describe the specific alert configuration
-atlas alerts settings describe YOUR_ALERT_CONFIG_ID --projectId YOUR_PROJECT_ID --output json
-```
-
-4. **Copy the exact event type, metric name, and units** from the output:
-
-```json
-{
-  "eventTypeName": "OUTSIDE_METRIC_THRESHOLD",
-  "metricThreshold": {
-    "metricName": "NORMALIZED_SYSTEM_CPU_USER",
-    "mode": "AVERAGE",
-    "operator": "GREATER_THAN",
-    "threshold": 80.0,
-    "units": "RAW"
-  }
-}
-```
-
-   - `eventTypeName` → maps to `event_type` in `ALERT_MAPPINGS`
-   - `metricName` → maps to `metric_name`
-   - `units` → can be `RAW`, `BYTES`, `MILLISECONDS`, `SECONDS`, or `HOURS`
-
-5. **Update the script** with these values in `ALERT_MAPPINGS`
-
-6. **Delete the manually created alert** (optional) and re-run the automation:
-```bash
-atlas alerts settings delete ALERT_ID --projectId YOUR_PROJECT_ID --force
-```
-
-### Method 2: Query Available Metrics via Atlas CLI
-
-Get a list of available measurements for a specific process (MongoDB instance):
-
-```bash
-# List all processes (hosts) in your project
-atlas processes list --projectId YOUR_PROJECT_ID
-
-# Get available measurements for a specific process
-# The process ID is in the format: hostname:port
-atlas metrics processes YOUR_PROCESS_ID --projectId YOUR_PROJECT_ID --granularity PT1M --period PT1H
-```
-
-Example output shows available metric names:
-```
-ASSERT_MSG
-ASSERT_REGULAR
-CONNECTIONS
-DISK_PARTITION_READ_IOPS_DATA
-DISK_PARTITION_WRITE_IOPS_DATA
-NORMALIZED_SYSTEM_CPU_USER
-SWAP_USAGE_USED
-...
-```
-
-### Method 3: Query Available Metrics via Atlas API
-
-If you prefer using the API directly:
-
-```bash
-# Get measurements for a process
-curl -u "PUBLIC_KEY:PRIVATE_KEY" --digest \
-  "https://cloud.mongodb.com/api/atlas/v2/groups/PROJECT_ID/processes/HOSTNAME:PORT/measurements?granularity=PT1M&period=PT1H"
-```
-
-### Method 4: Check Existing Alert Configurations
-
-List existing alerts to see what metric names are used:
-
-```bash
-# List all alert configurations
-atlas alerts settings list --projectId YOUR_PROJECT_ID --output json
-```
-
-This shows the full JSON configuration including `metricThreshold.metricName` for metric-based alerts.
-
-### Adding a New Alert Type to the Script
-
-Once you have the metric name, add it to the `ALERT_MAPPINGS` dictionary in `create_atlas_alerts.py`:
-
-```python
-ALERT_MAPPINGS = {
-    # ... existing mappings ...
-
-    "Your New Alert Name": {
-        "event_type": "OUTSIDE_METRIC_THRESHOLD",
-        "metric_name": "METRIC_NAME_FROM_API",
-        "units": "RAW",  # or BYTES, MILLISECONDS, SECONDS, HOURS, etc.
-    },
-}
-```
-
-Then add a corresponding row to the Excel file with the alert name and thresholds.
-
-### Common Units
-
-| Unit | When to Use |
-|------|-------------|
-| `RAW` | Counts, numbers, percentages (connections, IOPS, CPU %) |
-| `BYTES` | Memory, disk space in bytes |
-| `MILLISECONDS` | Latency measurements |
-| `SECONDS` | Time durations (replication lag) |
-| `HOURS` | Longer durations (oplog window) |
-
-**Note:** Percentage values like CPU % use `RAW` units (values 0-100), not `PERCENT`.
-
-## Reference Documentation
-
-- [Atlas CLI alerts settings create](https://www.mongodb.com/docs/atlas/cli/current/command/atlas-alerts-settings-create/)
-- [Alert Configuration File format](https://www.mongodb.com/docs/atlas/cli/current/reference/json/alert-config-file/)
+- [Atlas CLI Documentation](https://www.mongodb.com/docs/atlas/cli/current/)
 - [Alert Conditions Reference](https://www.mongodb.com/docs/atlas/reference/alert-conditions/)
-- [Recommended Alert Configurations](https://www.mongodb.com/docs/atlas/architecture/current/monitoring-alerts/#recommended-atlas-alert-configurations)
-
-## Notes
-
-- Low and high priority thresholds create separate alerts when values differ
-- Event-based alerts (like "Failed backup") trigger on any occurrence
-- The script continues processing if individual alerts fail
-- All alerts include `GROUP_OWNER` notification by default
-- Review and customize thresholds before running in production
+- [Recommended Alert Configurations](https://www.mongodb.com/docs/atlas/architecture/current/monitoring-alerts/)
