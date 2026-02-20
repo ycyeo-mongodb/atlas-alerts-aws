@@ -1076,6 +1076,86 @@ See the [original README](./README.md) for:
 
 ---
 
+## Alert Simulator - Testing Your Alerts
+
+After deploying alerts, you can **test them** using the included simulator script.
+
+### What the Simulator Does
+
+It creates conditions that trigger your configured alerts:
+
+| Simulation | What It Does | Alerts Triggered |
+|------------|--------------|------------------|
+| `cpu` | Runs compute-intensive aggregations | System: CPU (User) % |
+| `query-targeting` | Runs queries without indexes | Query Targeting, Index suggestions |
+| `connections` | Opens many concurrent connections | Connections % of configured limit |
+| `write-load` | Heavy inserts/updates/deletes | Disk write IOPS, latency, Writers queue |
+| `read-load` | Heavy reads and scans | Disk read IOPS, latency, Readers queue |
+
+### Setup
+
+```bash
+# Install pymongo
+pip install pymongo
+
+# Set your connection string in .env.local
+echo 'MONGODB_CONNECTION_STRING=mongodb+srv://user:pass@cluster.mongodb.net' >> .env.local
+```
+
+### Usage
+
+```bash
+# Load connection string from .env.local
+source .env.local
+
+# Run query-targeting simulation (easiest to trigger alerts)
+python3 simulate_alerts.py \
+  --connection-string "$MONGODB_CONNECTION_STRING" \
+  --simulation query-targeting \
+  --duration 120
+
+# Run CPU load simulation
+python3 simulate_alerts.py \
+  --connection-string "$MONGODB_CONNECTION_STRING" \
+  --simulation cpu \
+  --duration 60
+
+# Run ALL simulations
+python3 simulate_alerts.py \
+  --connection-string "$MONGODB_CONNECTION_STRING" \
+  --simulation all \
+  --duration 60
+
+# Clean up test data after simulation
+python3 simulate_alerts.py \
+  --connection-string "$MONGODB_CONNECTION_STRING" \
+  --cleanup-only
+```
+
+### Where to See Triggered Alerts
+
+1. **Atlas UI**: [cloud.mongodb.com](https://cloud.mongodb.com) → Your Project → **Alerts** → **Open Alerts**
+2. **Email**: Sent to Project Owners (check your inbox/spam)
+
+### Alert Notification Settings
+
+The alerts we created are configured to:
+- Send **email** to users with `GROUP_OWNER` (Project Owner) role
+- Wait **5 minutes** before first notification (`delayMin`)
+- Resend every **60 minutes** if condition persists (`intervalMin`)
+
+```json
+{
+  "typeName": "GROUP",
+  "intervalMin": 60,
+  "delayMin": 5,
+  "emailEnabled": true,
+  "roles": ["GROUP_OWNER"]
+}
+```
+
+---
+
 ## License
 
 MIT License - See original repository for details.
